@@ -1,0 +1,15 @@
+{
+  "name": "zentime-app",
+  "version": "1.0.0",
+  "description": "ZenTime Masaüstü Verimlilik Uygulaması",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder"
+  },
+  "author": "Kullanıcı",
+  "license": "ISC",
+  "devDependencies": {
+    "electron": "^28.3.3"
+  }
+}
