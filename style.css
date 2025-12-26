@@ -1,0 +1,31 @@
+/* style.css */
+
+/* Font İçe Aktarma */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+/* Temel Body Ayarları */
+/* Chrome, Safari, Opera ve Electron için */
+*::-webkit-scrollbar {
+    display: none;
+}
+
+body { 
+    font-family: 'Inter', sans-serif; 
+    -webkit-tap-highlight-color: transparent; 
+    transition: background-color 0.3s ease;
+}
+
+/* Karanlık modda iç elemanlar için scrollbar rengi (eğer görünürse) */
+.dark ::-webkit-scrollbar-thumb { 
+    background: #475569; 
+}
+
+/* Rakamların genişliğini sabitleme (Sayaçlar için önemli) */
+.tabular-nums { 
+    font-variant-numeric: tabular-nums; 
+}
+
+/* Yan menü animasyonu */
+.sidebar-transition {
+    transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
