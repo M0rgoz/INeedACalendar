@@ -18,12 +18,22 @@
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <script src="locales.js"></script>
+
+    <style>
+        /* Özel scrollbar stili */
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background-color: #cbd5e1; border-radius: 20px; }
+        .dark .custom-scrollbar::-webkit-scrollbar-thumb { background-color: #334155; }
+    </style>
 </head>
 <body class="bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 select-none">
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect } = React;
+        const { useState, useEffect, useRef, useMemo } = React;
 
         const formatTime = (seconds) => {
             const mins = Math.floor(seconds / 60);
@@ -36,15 +46,33 @@
             const [alarmActive, setAlarmActive] = useState(null);
             const [activeTab, setActiveTab] = useState('takvim');
             const [isMenuOpen, setIsMenuOpen] = useState(false);
-            
-            // Yeni: Formdaki saat inputunu kontrol etmek için state
             const [formTime, setFormTime] = useState('');
 
-            // Karanlık mod state'i
+            // DİL STATE
+            const availableLangs = typeof APP_TRANSLATIONS !== 'undefined' ? Object.keys(APP_TRANSLATIONS) : ['tr'];
+            const [lang, setLang] = useState(() => localStorage.getItem('zentime_lang') || 'tr');
+            
+            const t = (typeof APP_TRANSLATIONS !== 'undefined' && APP_TRANSLATIONS[lang]) 
+                      ? APP_TRANSLATIONS[lang] 
+                      : (APP_TRANSLATIONS['tr'] || {}); 
+
+            const localeCode = t.dateFormat || 'tr-TR';
+
+            // Context Menu ve Modal State'leri
+            const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, date: null });
+            const [isEventModalOpen, setIsEventModalOpen] = useState(false); 
+            const [selectedEventDate, setSelectedEventDate] = useState(null);
+            
+            // Etkinlik Görüntüleme Modalı State'leri
+            const [isViewEventsModalOpen, setIsViewEventsModalOpen] = useState(false);
+            const [selectedDayEvents, setSelectedDayEvents] = useState([]);
+
+            // Karanlık mod
             const [darkMode, setDarkMode] = useState(() => {
                 return localStorage.getItem('zentime_dark') === 'true';
             });
             
+            // Hatırlatıcılar
             const [reminders, setReminders] = useState(() => {
                 const saved = localStorage.getItem('zentime_reminders');
                 return saved ? JSON.parse(saved) : [];
@@ -58,10 +86,19 @@
             // --- ETKİLER (EFFECTS) ---
 
             useEffect(() => {
+                localStorage.setItem('zentime_lang', lang);
+            }, [lang]);
+
+            useEffect(() => {
                 if ("Notification" in window) {
                     Notification.requestPermission();
                 }
-            }, []);
+                const handleClickOutside = (e) => {
+                    if (contextMenu.visible) setContextMenu({ ...contextMenu, visible: false });
+                };
+                document.addEventListener('click', handleClickOutside);
+                return () => document.removeEventListener('click', handleClickOutside);
+            }, [contextMenu]);
 
             useEffect(() => {
                 if (darkMode) {
@@ -70,8 +107,11 @@
                     document.documentElement.classList.remove('dark');
                 }
                 localStorage.setItem('zentime_dark', darkMode);
+            }, [darkMode]);
+
+            useEffect(() => {
                 if (window.lucide) window.lucide.createIcons();
-            }, [darkMode, activeTab, alarmActive]);
+            }, [darkMode, activeTab, alarmActive, contextMenu, isEventModalOpen, isViewEventsModalOpen, selectedDayEvents, reminders, currentDate, lang]); 
 
             useEffect(() => {
                 localStorage.setItem('zentime_reminders', JSON.stringify(reminders));
@@ -92,59 +132,51 @@
                 return () => clearInterval(interval);
             }, [isActive, timeLeft, pomodoroMode]);
 
-            // --- SES FONKSİYONLARI ---
-
+            // --- SES ---
             const playAlarmSound = () => {
                 try {
                     const ctx = new (window.AudioContext || window.webkitAudioContext)();
                     const osc = ctx.createOscillator();
                     const gain = ctx.createGain();
-
                     osc.connect(gain);
                     gain.connect(ctx.destination);
-
                     osc.type = 'square'; 
                     osc.frequency.setValueAtTime(440, ctx.currentTime);
                     osc.frequency.setValueAtTime(880, ctx.currentTime + 0.5);
-                    
                     gain.gain.setValueAtTime(0.2, ctx.currentTime);
                     gain.gain.setValueAtTime(0, ctx.currentTime + 0.5);
                     gain.gain.setValueAtTime(0.2, ctx.currentTime + 1);
                     gain.gain.setValueAtTime(0, ctx.currentTime + 1.5);
-
                     osc.start();
                     osc.stop(ctx.currentTime + 2); 
-                } catch (e) {
-                    console.error("Ses hatası:", e);
-                }
+                } catch (e) { console.error("Ses hatası:", e); }
             };
 
             // --- ALARM KONTROL DÖNGÜSÜ ---
             useEffect(() => {
                 const timer = setInterval(() => {
                     const now = new Date();
-                    // 24 saat formatında kontrol (HH:MM)
-                    const currentFormatted = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
-                    
+                    const currentFormattedTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+                    const currentFormattedDate = now.toLocaleDateString('en-CA'); 
+
                     setReminders(prevReminders => {
                         let alarmTriggered = false;
-                        
                         const updatedReminders = prevReminders.map(r => {
-                            if (r.time === currentFormatted && !r.notified) {
+                            if (r.notified) return r;
+                            const timeMatch = r.time === currentFormattedTime;
+                            const dateMatch = r.date ? (r.date === currentFormattedDate) : true;
+
+                            if (timeMatch && dateMatch) {
                                 alarmTriggered = true;
                                 playAlarmSound();
                                 if (Notification.permission === "granted") {
-                                    new Notification("ZenTime - Alarm", {
-                                        body: `${r.text} vakti geldi!`,
-                                        silent: true 
-                                    });
+                                    new Notification("ZenTime - Alarm", { body: `${r.text}`, silent: true });
                                 }
                                 setAlarmActive(r);
                                 return { ...r, notified: true };
                             }
                             return r;
                         });
-
                         if (alarmTriggered) return updatedReminders;
                         return prevReminders;
                     });
@@ -154,26 +186,80 @@
 
             // --- YARDIMCI FONKSİYONLAR ---
 
-            // Yeni Fonksiyon: Saati "Şu An"a ayarla
-            const setTimeNow = (e) => {
-                e.preventDefault();
+            const getFormattedDateStr = (day) => {
+                const year = currentDate.getFullYear();
+                const month = currentDate.getMonth();
+                return new Date(year, month, day).toLocaleDateString('en-CA');
+            }
+
+            const handleRightClick = (e, day) => {
+                e.preventDefault(); 
+                if (!day) return;
+                const dateStr = getFormattedDateStr(day);
+                setContextMenu({ visible: true, x: e.pageX, y: e.pageY, date: dateStr, dayDisplay: day });
+            };
+
+            const handleDayClick = (day) => {
+                if (!day) return;
+                const dateStr = getFormattedDateStr(day);
+                const eventsForDay = reminders.filter(r => r.date === dateStr);
+                setSelectedDayEvents(eventsForDay);
+                setSelectedEventDate(dateStr); 
+                setIsViewEventsModalOpen(true);
+            };
+
+            const openEventModal = () => {
+                setIsViewEventsModalOpen(false);
+                const dateToUse = contextMenu.visible ? contextMenu.date : selectedEventDate;
+                setSelectedEventDate(dateToUse);
+                setIsEventModalOpen(true);
+                setContextMenu({ ...contextMenu, visible: false });
+                
                 const now = new Date();
-                // 24 saat formatına zorla (HH:MM)
                 const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
                 setFormTime(timeStr);
             };
 
-            const addReminder = (e) => {
+            const saveEvent = (e) => {
+                e.preventDefault();
+                const formData = new FormData(e.target);
+                const newEvent = {
+                    id: Date.now(),
+                    text: formData.get('text'),
+                    time: formTime,
+                    date: selectedEventDate,
+                    notified: false
+                };
+                setReminders([...reminders, newEvent]);
+                setIsEventModalOpen(false);
+                setFormTime('');
+            };
+
+            const deleteEventFromViewModal = (eventId) => {
+                const updatedReminders = reminders.filter(r => r.id !== eventId);
+                setReminders(updatedReminders);
+                setSelectedDayEvents(selectedDayEvents.filter(r => r.id !== eventId));
+            };
+
+            const setTimeNow = (e) => {
+                e.preventDefault();
+                const now = new Date();
+                const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+                setFormTime(timeStr);
+            };
+
+            const addSimpleReminder = (e) => {
                 e.preventDefault();
                 const formData = new FormData(e.target);
                 setReminders([...reminders, {
                     id: Date.now(),
                     text: formData.get('text'),
-                    time: formTime, // State'ten alıyoruz
+                    time: formTime,
+                    date: null,
                     notified: false
                 }]);
                 e.target.reset();
-                setFormTime(''); // Formu temizle
+                setFormTime('');
             };
 
             const getDaysInMonth = (date) => {
@@ -193,39 +279,163 @@
 
             const toggleMenu = () => setIsMenuOpen(!isMenuOpen);
 
+            const getEventsForDay = (day) => {
+                if (!day) return [];
+                const checkDate = getFormattedDateStr(day);
+                return reminders
+                    .filter(r => r.date === checkDate)
+                    .sort((a, b) => a.time.localeCompare(b.time)); 
+            };
+
             const PageHeader = ({ title }) => (
                 <div className="mb-10 flex flex-col md:flex-row md:items-center gap-4">
                     <div className="flex items-center gap-4">
                         <h2 className="text-4xl font-black text-slate-800 dark:text-white tracking-tighter">{title}</h2>
                         <div className="h-8 w-[2px] bg-slate-200 dark:bg-slate-800 hidden md:block"></div>
                         <span className="text-indigo-600 dark:text-indigo-400 font-bold text-lg bg-indigo-50 dark:bg-indigo-950/30 px-3 py-1 rounded-lg">
-                            {new Date().toLocaleDateString('tr-TR', { day: 'numeric', month: 'long' })}
+                            {new Date().toLocaleDateString(localeCode, { day: 'numeric', month: 'long' })}
                         </span>
                     </div>
                 </div>
             );
 
-            // --- RENDER (GÖRÜNÜM) ---
+            // --- RENDER ---
             return (
                 <div className="relative h-screen overflow-hidden flex flex-col bg-slate-50 dark:bg-slate-950 transition-colors">
                     
-                    {/* POPUP */}
+                    {/* CONTEXT MENU */}
+                    {contextMenu.visible && (
+                        <div 
+                            className="fixed z-[70] bg-white dark:bg-slate-800 shadow-2xl rounded-xl border border-slate-100 dark:border-slate-700 py-2 w-48 animate-in fade-in zoom-in duration-100 origin-top-left"
+                            style={{ top: contextMenu.y, left: contextMenu.x }}
+                        >
+                            <div className="px-4 py-2 text-xs font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100 dark:border-slate-700 mb-1">
+                                {contextMenu.dayDisplay} {currentDate.toLocaleString(localeCode, { month: 'long' })}
+                            </div>
+                            <button 
+                                onClick={openEventModal}
+                                className="w-full text-left px-4 py-2 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 text-slate-700 dark:text-slate-200 font-bold flex items-center gap-2 transition-colors"
+                            >
+                                <i data-lucide="calendar-plus" size={16}></i>
+                                {t.addEvent}
+                            </button>
+                        </div>
+                    )}
+
+                    {/* VIEW EVENTS MODAL */}
+                    {isViewEventsModalOpen && (
+                        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200 px-4">
+                            <div className="bg-white dark:bg-slate-900 p-8 rounded-[2rem] shadow-2xl max-w-md w-full border border-slate-100 dark:border-slate-800 relative max-h-[80vh] flex flex-col">
+                                <button 
+                                    onClick={() => setIsViewEventsModalOpen(false)}
+                                    className="absolute top-6 right-6 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors p-1 bg-slate-100 dark:bg-slate-800 rounded-full"
+                                >
+                                    <i data-lucide="x" size={20}></i>
+                                </button>
+                                
+                                <div className="mb-6">
+                                    <h3 className="text-2xl font-black mb-1 dark:text-white">{t.events}</h3>
+                                    <p className="text-sm font-bold text-indigo-500 bg-indigo-50 dark:bg-indigo-900/30 inline-block px-3 py-1 rounded-lg">
+                                        {selectedEventDate && new Date(selectedEventDate).toLocaleDateString(localeCode, { day: 'numeric', month: 'long', year: 'numeric' })}
+                                    </p>
+                                </div>
+                                
+                                <div className="space-y-3 overflow-y-auto custom-scrollbar pr-2 -mr-2 flex-1">
+                                    {selectedDayEvents.length === 0 ? (
+                                        <div className="text-center py-8 border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-2xl">
+                                            <i data-lucide="calendar-off" size={32} className="mx-auto text-slate-300 mb-2"></i>
+                                            <p className="text-slate-400 font-bold text-sm">{t.noEvents}</p>
+                                        </div>
+                                    ) : (
+                                        selectedDayEvents.map(event => (
+                                            <div key={event.id} className="flex justify-between items-start p-4 bg-slate-50/80 dark:bg-slate-800/50 rounded-2xl border border-slate-100 dark:border-slate-700/50 group hover:border-indigo-200 dark:hover:border-indigo-800 transition-colors">
+                                                <div className="overflow-hidden">
+                                                    <div className="font-black text-slate-800 dark:text-slate-100 text-lg leading-tight break-words">{event.text}</div>
+                                                    <div className="text-sm text-indigo-600 dark:text-indigo-400 font-bold flex items-center gap-1.5 mt-2 bg-indigo-100 dark:bg-indigo-900/40 w-fit px-2 py-0.5 rounded-md">
+                                                        <i data-lucide="clock" size={14}></i> {event.time}
+                                                    </div>
+                                                </div>
+                                                <button 
+                                                    onClick={() => deleteEventFromViewModal(event.id)}
+                                                    className="text-slate-300 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 p-2 rounded-xl transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100 flex-shrink-0 ml-2"
+                                                    title="Sil"
+                                                >
+                                                    <i data-lucide="trash-2" size={18}></i>
+                                                </button>
+                                            </div>
+                                        ))
+                                    )}
+                                </div>
+
+                                <div className="mt-6 pt-4 border-t border-slate-100 dark:border-slate-800">
+                                    <button 
+                                        onClick={openEventModal}
+                                        className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-black rounded-xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-indigo-200 dark:shadow-none active:scale-95"
+                                    >
+                                        <i data-lucide="plus-circle" size={20}></i> {t.newEvent}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* EVENT ADD MODAL */}
+                    {isEventModalOpen && (
+                        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200 px-4">
+                            <div className="bg-white dark:bg-slate-900 p-8 rounded-[2rem] shadow-2xl max-w-sm w-full border border-slate-100 dark:border-slate-800 relative">
+                                <button 
+                                    onClick={() => setIsEventModalOpen(false)}
+                                    className="absolute top-6 right-6 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors p-1 bg-slate-100 dark:bg-slate-800 rounded-full"
+                                >
+                                    <i data-lucide="x" size={20}></i>
+                                </button>
+                                
+                                <h3 className="text-2xl font-black mb-1 dark:text-white">{t.newEvent}</h3>
+                                <p className="text-sm font-bold text-indigo-500 mb-6 bg-indigo-50 dark:bg-indigo-900/30 inline-block px-3 py-1 rounded-lg">
+                                    {selectedEventDate && new Date(selectedEventDate).toLocaleDateString(localeCode, { day: 'numeric', month: 'long', year: 'numeric' })}
+                                </p>
+                                
+                                <form onSubmit={saveEvent} className="space-y-6">
+                                    <div>
+                                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">{t.title}</label>
+                                        <input autoFocus name="text" required placeholder={t.placeholderTitle} className="w-full p-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-indigo-500 font-bold placeholder:font-normal placeholder:text-slate-400" />
+                                    </div>
+                                    <div>
+                                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2">{t.time}</label>
+                                        <input 
+                                            type="time" 
+                                            name="time" 
+                                            required 
+                                            value={formTime}
+                                            onChange={(e) => setFormTime(e.target.value)}
+                                            className="w-full p-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 dark:text-white outline-none font-bold" 
+                                        />
+                                    </div>
+                                    <button className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-black py-4 rounded-xl shadow-lg shadow-indigo-200 dark:shadow-none transition-all active:scale-95">
+                                        {t.save}
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* ALARM POPUP */}
                     {alarmActive && (
-                        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm animate-in fade-in duration-300">
+                        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm animate-in fade-in duration-300 px-4">
                             <div className="bg-white dark:bg-slate-900 p-10 rounded-[3rem] shadow-2xl max-w-md w-full text-center border-4 border-indigo-500 animate-bounce">
                                 <div className="w-24 h-24 bg-indigo-100 dark:bg-indigo-900 rounded-full flex items-center justify-center mx-auto mb-6 text-indigo-600 dark:text-indigo-400">
                                     <i data-lucide="bell-ring" size={48}></i>
                                 </div>
-                                <h2 className="text-3xl font-black text-slate-900 dark:text-white mb-2">Alarm Zamanı!</h2>
+                                <h2 className="text-3xl font-black text-slate-900 dark:text-white mb-2">{t.alarmTime}</h2>
                                 <p className="text-xl font-bold text-slate-500 dark:text-slate-400 mb-8">{alarmActive.text}</p>
                                 <div className="text-4xl font-black text-indigo-600 dark:text-indigo-400 mb-8 tabular-nums">
                                     {alarmActive.time}
                                 </div>
                                 <button 
                                     onClick={() => setAlarmActive(null)} 
-                                    className="w-full py-5 bg-indigo-600 hover:bg-indigo-700 text-white font-black text-xl rounded-2xl transition-all shadow-xl shadow-indigo-200 dark:shadow-none"
+                                    className="w-full py-5 bg-indigo-600 hover:bg-indigo-700 text-white font-black text-xl rounded-2xl transition-all shadow-xl shadow-indigo-200 dark:shadow-none active:scale-95"
                                 >
-                                    TAMAM, DURDUR
+                                    {t.stop}
                                 </button>
                             </div>
                         </div>
@@ -235,7 +445,7 @@
                     <div className="fixed top-10 right-6 z-[60] flex gap-3">
                         <button 
                             onClick={toggleMenu}
-                            className="p-3 bg-white dark:bg-slate-900 shadow-xl border border-slate-100 dark:border-slate-800 rounded-2xl text-slate-600 dark:text-slate-400 hover:text-indigo-600 transition-all"
+                            className="p-3 bg-white dark:bg-slate-900 shadow-xl border border-slate-100 dark:border-slate-800 rounded-2xl text-slate-600 dark:text-slate-400 hover:text-indigo-600 transition-all active:scale-90"
                         >
                             <i data-lucide={isMenuOpen ? "x" : "menu"} size="24"></i>
                         </button>
@@ -245,7 +455,7 @@
                     <aside className={`fixed top-0 right-0 h-full w-72 bg-white dark:bg-slate-900 z-50 shadow-2xl border-l border-slate-100 dark:border-slate-800 sidebar-transition ${isMenuOpen ? 'translate-x-0' : 'translate-x-full'}`}>
                         <div className="p-8 pt-20 flex flex-col h-full">
                             <div className="flex items-center gap-3 mb-12 px-2">
-                                <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white">
+                                <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-indigo-200 dark:shadow-none">
                                     <i data-lucide="zap" size="20"></i>
                                 </div>
                                 <span className="text-xl font-black text-slate-800 dark:text-white">ZenTime</span>
@@ -253,14 +463,14 @@
                             
                             <nav className="flex flex-col gap-3">
                                 {[
-                                    { id: 'takvim', icon: 'calendar', label: 'Takvim' },
-                                    { id: 'hatirlaticilar', icon: 'bell', label: 'Alarmlar' },
-                                    { id: 'pomodoro', icon: 'timer', label: 'Pomodoro' }
+                                    { id: 'takvim', icon: 'calendar', label: t.calendar },
+                                    { id: 'hatirlaticilar', icon: 'bell', label: t.alarms },
+                                    { id: 'pomodoro', icon: 'timer', label: t.pomodoro }
                                 ].map(item => (
                                     <button
                                         key={item.id}
                                         onClick={() => { setActiveTab(item.id); setIsMenuOpen(false); }}
-                                        className={`w-full flex items-center gap-4 px-5 py-4 rounded-2xl transition-all ${
+                                        className={`w-full flex items-center gap-4 px-5 py-4 rounded-2xl transition-all active:scale-95 ${
                                             activeTab === item.id 
                                                 ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200 dark:shadow-none' 
                                                 : 'text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800'
@@ -270,15 +480,32 @@
                                         <span className="font-bold text-sm">{item.label}</span>
                                     </button>
                                 ))}
+                                
                                 <div className="h-px bg-slate-100 dark:bg-slate-800 my-2 mx-4"></div>
+                                
+                                {/* DİNAMİK DİL SEÇİMİ */}
+                                <div className="px-5 py-2">
+                                    <div className="flex bg-slate-100 dark:bg-slate-800 rounded-xl p-1 overflow-x-auto">
+                                        {availableLangs.map(langKey => (
+                                            <button 
+                                                key={langKey}
+                                                onClick={() => setLang(langKey)} 
+                                                className={`flex-1 min-w-[3rem] py-2 rounded-lg text-xs font-black transition-all ${lang === langKey ? 'bg-white dark:bg-slate-700 shadow text-indigo-600 dark:text-white' : 'text-slate-400 hover:text-slate-600'}`}
+                                            >
+                                                {APP_TRANSLATIONS[langKey].langName}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+
                                 <button
                                     onClick={() => setDarkMode(!darkMode)}
-                                    className="w-full flex items-center justify-between px-5 py-4 rounded-2xl text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all"
+                                    className="w-full flex items-center justify-between px-5 py-4 rounded-2xl text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all active:scale-95"
                                 >
                                     <div className="flex items-center gap-4">
                                         <i data-lucide={darkMode ? "sun" : "moon"} size="22"></i>
                                         <span className="font-bold text-sm">
-                                            {darkMode ? 'Aydınlık' : 'Karanlık'}
+                                            {darkMode ? t.lightMode : t.darkMode}
                                         </span>
                                     </div>
                                     <div className={`w-8 h-4 rounded-full relative transition-colors ${darkMode ? 'bg-indigo-600' : 'bg-slate-300'}`}>
@@ -288,42 +515,72 @@
                             </nav>
 
                             <div className="mt-auto p-5 bg-slate-50 dark:bg-slate-800/50 rounded-[2rem] border border-slate-100 dark:border-slate-800">
-                                <p className="text-[10px] uppercase text-slate-400 font-bold mb-3">Sistem</p>
+                                <p className="text-[10px] uppercase text-slate-400 font-bold mb-3">{t.system}</p>
                                 <div className="flex items-center gap-3 text-xs font-black dark:text-slate-300">
                                     <div className={`w-2.5 h-2.5 rounded-full ${isActive ? 'bg-green-500 animate-pulse' : 'bg-slate-300 dark:bg-slate-600'}`}></div>
-                                    {isActive ? 'ODAK MODU' : 'BEKLEMEDE'}
+                                    {/* BURAYA EKLENDİ: Eğer aktifse saati de göster */}
+                                    {isActive ? (
+                                        <span className="flex items-center gap-2">
+                                            {t.focusMode}
+                                            <span className="opacity-60 font-normal tabular-nums">{formatTime(timeLeft)}</span>
+                                        </span>
+                                    ) : t.standingBy}
                                 </div>
                             </div>
                         </div>
                     </aside>
 
-                    <main className="flex-1 overflow-y-auto p-6 md:p-12">
+                    <main className="flex-1 overflow-y-auto p-6 md:p-12 custom-scrollbar">
                         {activeTab === 'takvim' && (
                             <div className="max-w-full mx-auto">
-                                <PageHeader title="Planlayıcı" />
+                                <PageHeader title={t.planner} />
                                 <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] shadow-2xl border border-slate-100 dark:border-slate-800 overflow-hidden transition-colors">
                                     <div className="p-8 border-b border-slate-50 dark:border-slate-800 flex justify-between items-center">
-                                        <h3 className="text-2xl font-black dark:text-white">
-                                            {currentDate.toLocaleString('tr-TR', { month: 'long', year: 'numeric' })}
+                                        <h3 className="text-2xl font-black dark:text-white first-letter:uppercase">
+                                            {currentDate.toLocaleString(localeCode, { month: 'long', year: 'numeric' })}
                                         </h3>
-                                        <div className="flex gap-3">
-                                            <button onClick={() => setCurrentDate(new Date(currentDate.setMonth(currentDate.getMonth() - 1)))} className="p-3 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-2xl dark:text-white transition-all"><i data-lucide="chevron-left"></i></button>
-                                            <button onClick={() => setCurrentDate(new Date(currentDate.setMonth(currentDate.getMonth() + 1)))} className="p-3 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-2xl dark:text-white transition-all"><i data-lucide="chevron-right"></i></button>
+                                        <div className="flex gap-2">
+                                            <button onClick={() => setCurrentDate(new Date(currentDate.setMonth(currentDate.getMonth() - 1)))} className="p-3 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-2xl dark:text-white transition-all active:scale-90 bg-slate-50 dark:bg-slate-800/50"><i data-lucide="chevron-left"></i></button>
+                                            <button onClick={() => setCurrentDate(new Date(currentDate.setMonth(currentDate.getMonth() + 1)))} className="p-3 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-2xl dark:text-white transition-all active:scale-90 bg-slate-50 dark:bg-slate-800/50"><i data-lucide="chevron-right"></i></button>
                                         </div>
                                     </div>
-                                    <div className="grid grid-cols-7 text-center font-black text-slate-300 dark:text-slate-600 py-8 uppercase text-[10px] tracking-[0.3em]">
-                                        {['Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt', 'Paz'].map(d => <div key={d}>{d}</div>)}
+                                    <div className="grid grid-cols-7 text-center font-black text-slate-300 dark:text-slate-600 py-6 uppercase text-[11px] tracking-[0.2em] bg-slate-50/50 dark:bg-slate-950/30">
+                                        {t.daysShort.map(d => <div key={d}>{d}</div>)}
                                     </div>
                                     <div className="grid grid-cols-7 border-t border-slate-50 dark:border-slate-800">
                                         {calendarGrid.map((day, idx) => (
-                                            <div key={idx} className={`h-24 md:h-36 border-r border-b border-slate-50 dark:border-slate-800 p-4 hover:bg-indigo-50/20 dark:hover:bg-indigo-900/10 transition-all group relative ${!day ? 'bg-slate-50/20 dark:bg-slate-900/20' : ''}`}>
+                                            <div 
+                                                key={idx} 
+                                                onContextMenu={(e) => handleRightClick(e, day)}
+                                                onClick={() => handleDayClick(day)}
+                                                className={`min-h-[8rem] md:min-h-[10rem] border-r border-b border-slate-50 dark:border-slate-800 p-2 transition-all group relative cursor-pointer select-none flex flex-col items-start justify-start
+                                                    ${!day ? 'bg-slate-50/30 dark:bg-slate-950/30 pointer-events-none' : 'hover:bg-indigo-50/30 dark:hover:bg-indigo-900/10 active:bg-indigo-100/30'}`}
+                                            >
                                                 {day && (
-                                                    <span className={`inline-block w-10 h-10 leading-10 text-center rounded-2xl font-black text-sm transition-all ${
-                                                        day === new Date().getDate() && currentDate.getMonth() === new Date().getMonth()
-                                                        ? 'bg-indigo-600 text-white shadow-xl scale-110' : 'text-slate-600 dark:text-slate-400 group-hover:text-indigo-600'
-                                                    }`}>
-                                                        {day}
-                                                    </span>
+                                                    <>
+                                                        <div className="w-full flex justify-center mb-1">
+                                                            <span className={`inline-flex w-8 h-8 items-center justify-center rounded-xl font-black text-xs transition-all ${
+                                                                day === new Date().getDate() && currentDate.getMonth() === new Date().getMonth() && currentDate.getFullYear() === new Date().getFullYear()
+                                                                ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-300/50 dark:shadow-none' : 'text-slate-500 dark:text-slate-500 group-hover:text-indigo-600 dark:group-hover:text-indigo-400'
+                                                            }`}>
+                                                                {day}
+                                                            </span>
+                                                        </div>
+                                                        
+                                                        <div className="w-full flex flex-col gap-1 overflow-hidden">
+                                                            {getEventsForDay(day).slice(0, 4).map(event => (
+                                                                <div key={event.id} className="w-full bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-200 text-[10px] font-bold px-1.5 py-0.5 rounded truncate transition-colors hover:bg-indigo-200 dark:hover:bg-indigo-800/60">
+                                                                    <span className="opacity-70 mr-1 font-medium">{event.time}</span>
+                                                                    {event.text}
+                                                                </div>
+                                                            ))}
+                                                            {getEventsForDay(day).length > 4 && (
+                                                                <div className="text-[9px] text-center text-slate-400 font-bold">
+                                                                    +{getEventsForDay(day).length - 4} {t.more}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    </>
                                                 )}
                                             </div>
                                         ))}
@@ -334,25 +591,27 @@
 
                         {activeTab === 'hatirlaticilar' && (
                             <div className="max-w-6xl mx-auto">
-                                <PageHeader title="Alarmlar" />
+                                <PageHeader title={t.alarms} />
                                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-12">
                                     <div className="bg-white dark:bg-slate-900 p-12 rounded-[3rem] shadow-2xl border border-slate-100 dark:border-slate-800 transition-colors">
-                                        <h3 className="text-2xl font-black mb-10 dark:text-white">Yeni Kayıt</h3>
-                                        <form onSubmit={addReminder} className="space-y-8">
+                                        <h3 className="text-2xl font-black mb-10 dark:text-white flex items-center gap-3">
+                                            <i data-lucide="alarm-clock-plus" className="text-indigo-500"></i>
+                                            {t.addDailyAlarm}
+                                        </h3>
+                                        <form onSubmit={addSimpleReminder} className="space-y-8">
                                             <div>
-                                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] block mb-3 px-1">Görev Başlığı</label>
-                                                <input name="text" required placeholder="Görev girin..." className="w-full p-5 rounded-2xl border border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 dark:text-white outline-none focus:ring-4 focus:ring-indigo-100 dark:focus:ring-indigo-900/30 transition-all font-bold" />
+                                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] block mb-3 px-1">{t.taskTitle}</label>
+                                                <input name="text" required placeholder={t.placeholderTask} className="w-full p-5 rounded-2xl border border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 dark:text-white outline-none focus:ring-4 focus:ring-indigo-100 dark:focus:ring-indigo-900/30 transition-all font-bold placeholder:font-normal placeholder:text-slate-400" />
                                             </div>
                                             
-                                            {/* GÜNCELLENEN KISIM: SAAT SEÇİMİ VE BUTON */}
                                             <div>
                                                 <div className="flex justify-between items-center mb-3 px-1">
-                                                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] block">Saat</label>
+                                                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] block">{t.time}</label>
                                                     <button 
                                                         onClick={setTimeNow}
-                                                        className="text-xs font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 px-3 py-1 rounded-lg hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors"
+                                                        className="text-xs font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 px-3 py-1 rounded-lg hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors active:scale-95"
                                                     >
-                                                        ŞİMDİ
+                                                        {t.now}
                                                     </button>
                                                 </div>
                                                 <input 
@@ -364,30 +623,46 @@
                                                     className="w-full p-5 rounded-2xl border border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 dark:text-indigo-400 outline-none font-black text-xl" 
                                                 />
                                             </div>
-                                            {/* ---------------------------------- */}
                                             
-                                            <button className="w-full bg-indigo-600 text-white font-black py-6 rounded-3xl shadow-2xl hover:bg-indigo-700 transition-all">Alarmı Kur</button>
+                                            <button className="w-full bg-indigo-600 text-white font-black py-6 rounded-3xl shadow-2xl shadow-indigo-200 dark:shadow-none hover:bg-indigo-700 transition-all active:scale-95">{t.setDaily}</button>
                                         </form>
                                     </div>
-                                    <div className="bg-white dark:bg-slate-900 p-12 rounded-[3rem] shadow-2xl border border-slate-100 dark:border-slate-800 transition-colors">
-                                        <h3 className="text-2xl font-black mb-10 dark:text-white">Takip Listesi</h3>
-                                        <div className="space-y-5">
+                                    <div className="bg-white dark:bg-slate-900 p-12 rounded-[3rem] shadow-2xl border border-slate-100 dark:border-slate-800 transition-colors flex flex-col max-h-[600px]">
+                                        <h3 className="text-2xl font-black mb-10 dark:text-white flex items-center gap-3">
+                                            <i data-lucide="list-checks" className="text-indigo-500"></i>
+                                            {t.trackList}
+                                        </h3>
+                                        <div className="space-y-5 overflow-y-auto custom-scrollbar pr-4 -mr-4 flex-1">
                                             {reminders.length === 0 ? (
-                                                <div className="py-24 text-center">
-                                                    <i data-lucide="bell-off" size={40} className="mx-auto mb-6 text-slate-200 dark:text-slate-700"></i>
-                                                    <p className="text-slate-400 font-bold uppercase text-xs">Aktif alarm yok</p>
+                                                <div className="py-24 text-center border-2 border-dashed border-slate-100 dark:border-slate-800 rounded-[2rem]">
+                                                    <i data-lucide="bell-off" size={40} className="mx-auto mb-6 text-slate-300 dark:text-slate-700"></i>
+                                                    <p className="text-slate-400 font-bold uppercase text-xs tracking-widest">{t.noActiveAlarms}</p>
                                                 </div>
                                             ) : (
-                                                reminders.map(r => (
-                                                    <div key={r.id} className="flex items-center justify-between p-6 bg-slate-50/50 dark:bg-slate-800/30 rounded-3xl border border-slate-50 dark:border-slate-800 hover:border-indigo-100 dark:hover:border-indigo-900 transition-all group">
-                                                        <div>
-                                                            <div className="font-black text-slate-800 dark:text-slate-200 text-xl">{r.text}</div>
-                                                            <div className="text-sm text-indigo-500 font-black flex items-center gap-2 mt-2">
-                                                                <i data-lucide="clock" size={16}></i> {r.time}
+                                                reminders.sort((a,b) => a.time.localeCompare(b.time)).map(r => (
+                                                    <div key={r.id} className="flex items-center justify-between p-6 bg-slate-50/50 dark:bg-slate-800/30 rounded-3xl border border-slate-100 dark:border-slate-800/50 hover:border-indigo-200 dark:hover:border-indigo-800 transition-all group">
+                                                        <div className="flex-1 pr-4">
+                                                            <div className="font-black text-slate-800 dark:text-slate-100 text-lg break-words">{r.text}</div>
+                                                            <div className="text-sm text-indigo-500 dark:text-indigo-400 font-bold flex flex-wrap items-center gap-2 mt-3">
+                                                                <span className="bg-indigo-100 dark:bg-indigo-900/40 px-3 py-1 rounded-xl flex items-center gap-1.5">
+                                                                    <i data-lucide="clock" size={14}></i> {r.time}
+                                                                </span>
+                                                                {r.date ? (
+                                                                    <span className="text-slate-400 dark:text-slate-500 font-semibold text-xs pl-1 flex items-center gap-1">
+                                                                        <i data-lucide="calendar" size={12}></i>
+                                                                        {new Date(r.date).toLocaleDateString(localeCode, { day: 'numeric', month: 'long' })}
+                                                                    </span>
+                                                                ) : (
+                                                                    <span className="bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 text-[10px] font-black px-2 py-1 rounded-lg ml-1 tracking-wide">{t.everyDay}</span>
+                                                                )}
                                                             </div>
                                                         </div>
-                                                        <button onClick={() => setReminders(reminders.filter(x => x.id !== r.id))} className="text-slate-300 hover:text-red-500 transition-all">
-                                                            <i data-lucide="trash-2" size={22}></i>
+                                                        <button 
+                                                            onClick={() => setReminders(reminders.filter(x => x.id !== r.id))} 
+                                                            className="text-slate-300 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 p-3 rounded-2xl transition-all opacity-0 group-hover:opacity-100 focus:opacity-100 active:scale-90"
+                                                            title="Sil"
+                                                        >
+                                                            <i data-lucide="trash-2" size={20}></i>
                                                         </button>
                                                     </div>
                                                 ))
@@ -400,13 +675,13 @@
 
                         {activeTab === 'pomodoro' && (
                             <div className="flex flex-col items-center">
-                                <PageHeader title="Odaklanma" />
+                                <PageHeader title={t.pomodoro} />
                                 <div className="bg-white dark:bg-slate-900 p-12 md:p-16 rounded-[5rem] shadow-2xl border border-slate-100 dark:border-slate-800 w-full max-w-lg text-center relative overflow-hidden transition-colors">
                                     <div className={`absolute top-0 left-0 h-3 transition-all duration-1000 ${pomodoroMode === 'work' ? 'bg-indigo-600' : 'bg-emerald-500'}`} style={{ width: `${(timeLeft / (pomodoroMode === 'work' ? 25*60 : 5*60)) * 100}%` }}></div>
                                     
                                     <div className="inline-flex gap-2 mb-16 bg-slate-100 dark:bg-slate-800 p-2.5 rounded-[2rem]">
-                                        <button onClick={() => { setPomodoroMode('work'); setTimeLeft(25 * 60); setIsActive(false); }} className={`px-8 py-4 rounded-[1.5rem] text-sm font-black transition-all ${pomodoroMode === 'work' ? 'bg-white dark:bg-slate-700 shadow-xl text-indigo-600 dark:text-white' : 'text-slate-400 hover:text-slate-600'}`}>ODAK</button>
-                                        <button onClick={() => { setPomodoroMode('shortBreak'); setTimeLeft(5 * 60); setIsActive(false); }} className={`px-8 py-4 rounded-[1.5rem] text-sm font-black transition-all ${pomodoroMode === 'shortBreak' ? 'bg-white dark:bg-slate-700 shadow-xl text-emerald-600 dark:text-white' : 'text-slate-400 hover:text-slate-600'}`}>MOLA</button>
+                                        <button onClick={() => { setPomodoroMode('work'); setTimeLeft(25 * 60); setIsActive(false); }} className={`px-8 py-4 rounded-[1.5rem] text-sm font-black transition-all active:scale-95 ${pomodoroMode === 'work' ? 'bg-white dark:bg-slate-700 shadow-xl text-indigo-600 dark:text-white' : 'text-slate-400 hover:text-slate-600'}`}>{t.focus}</button>
+                                        <button onClick={() => { setPomodoroMode('shortBreak'); setTimeLeft(5 * 60); setIsActive(false); }} className={`px-8 py-4 rounded-[1.5rem] text-sm font-black transition-all active:scale-95 ${pomodoroMode === 'shortBreak' ? 'bg-white dark:bg-slate-700 shadow-xl text-emerald-600 dark:text-white' : 'text-slate-400 hover:text-slate-600'}`}>{t.break}</button>
                                     </div>
                                     
                                     <div className={`text-8xl md:text-[9rem] font-black tracking-tighter tabular-nums mb-16 leading-none transition-colors ${pomodoroMode === 'work' ? 'text-slate-800 dark:text-white' : 'text-emerald-600 dark:text-emerald-400'}`}>
@@ -414,10 +689,10 @@
                                     </div>
                                     
                                     <div className="flex gap-6">
-                                        <button onClick={() => setIsActive(!isActive)} className={`flex-1 py-6 rounded-[2.5rem] text-2xl font-black shadow-2xl transition-all ${isActive ? 'bg-slate-800 dark:bg-slate-700 text-white' : 'bg-indigo-600 text-white'}`}>
-                                            {isActive ? 'DURDUR' : 'BAŞLAT'}
+                                        <button onClick={() => setIsActive(!isActive)} className={`flex-1 py-6 rounded-[2.5rem] text-2xl font-black shadow-2xl shadow-indigo-200 dark:shadow-none transition-all active:scale-95 ${isActive ? 'bg-slate-800 dark:bg-slate-700 text-white shadow-none' : 'bg-indigo-600 text-white'}`}>
+                                            {isActive ? 'DURDUR' : t.start}
                                         </button>
-                                        <button onClick={() => { setIsActive(false); setTimeLeft(pomodoroMode === 'work' ? 25 * 60 : 5 * 60); }} className="w-20 h-20 flex items-center justify-center bg-slate-50 dark:bg-slate-800 rounded-[2.5rem] text-slate-400 hover:text-indigo-600 transition-all">
+                                        <button onClick={() => { setIsActive(false); setTimeLeft(pomodoroMode === 'work' ? 25 * 60 : 5 * 60); }} className="w-20 h-20 flex items-center justify-center bg-slate-50 dark:bg-slate-800 rounded-[2.5rem] text-slate-400 hover:text-indigo-600 transition-all active:scale-90">
                                             <i data-lucide="rotate-ccw" size={32}></i>
                                         </button>
                                     </div>
